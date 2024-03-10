@@ -80,7 +80,7 @@ class RMSNorm(nn.Module):
 
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
-        # exponential so that division by zero doesnt occur
+        # epsilon so that division by zero doesnt occur
         self.eps = eps
         # gamma parameter
         self.weight = nn.Parameter(torch.ones(dim))
@@ -96,6 +96,30 @@ class RMSNorm(nn.Module):
         # (Dim) * (B, Seq_Len, Dim) = (B, Seq_Len, Dim)
         return self.weight * self._norm(x.float()).type_as(x)
 
+class DecoderBlock(nn.Module):
+
+    def __init__(self, args):
+        super().__init__()
+
+        self.n_heads = args.n_heads
+        self.dim = args.dim
+        self.head_dim = self.n_heads // self.dim
+
+        self.attention = SelfAttention(args)
+        self.feed_forward = FeedForward(args)
+
+        # Calculating RMSNorm BEFORE Attention
+        self.attention_norm = RMSNorm(args.dim, args.norm_eps)
+        # Calculating RMSNorm AFTER Feedforward layer
+        self.ffn_norm = RMSNorm(args.dim,args.norm_eps)
+
+    def forward(self,x: torch.Tensor, start_pos:int, freq_complex: torch.Tensor):
+        # (B, Seq_Len, Dim) + (B, Seq_Len, Dim) = (B, Seq_Len, Dim)
+        h = x + self.attention(self.attention_norm(x),start_pos,freq_complex)
+        out = self.feed_forward(self.ffn_norm(h))
+        return out
+
+
 class Transformer:
     def __init__(self, args: ModelArgs) -> None:
         super.__init__()
@@ -109,7 +133,7 @@ class Transformer:
         self.layers = nn.ModuleList()
 
         for _ in range(self.n_layers):
-            self.layers.append(Decoder(args))
+            self.layers.append(DecoderBlock(args))
 
         self.norm = RMSNorm(args.dim, eps=args.eps)
         self.output = nn.Linear(args.dim, self.vocab_size, bias=True)

@@ -76,6 +76,25 @@ def apply_rotatry_embeddings(x: torch.Tensor, freq_complex: torch.Tensor, device
 
     return x_out.type_as(x).to(device)
 
+class RMSNorm(nn.Module):
+
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        # exponential so that division by zero doesnt occur
+        self.eps = eps
+        # gamma parameter
+        self.weight = nn.Parameter(torch.ones(dim))
+    
+    def _norm(self, x: torch.Tensor):
+        # Mean is taken for squared elements for each sequence 
+        # rsqrt: 1/sqrt(x)
+        # (B, Seq_Len, Dim) * (B, Seq_Len * 1) = (B, Seq_Len, Dim)
+        norm = x * torch.rsqrt(x.pow(2).mean(-1,keepdim=True) + self.eps)
+        return norm
+    
+    def forward(self, x: torch.Tensor):
+        # (Dim) * (B, Seq_Len, Dim) = (B, Seq_Len, Dim)
+        return self.weight * self._norm(x.float()).type_as(x)
 
 class Transformer:
     def __init__(self, args: ModelArgs) -> None:
@@ -100,3 +119,22 @@ class Transformer:
             self.args.max_seq_len * 2,
             device=self.args.device,
         )
+
+    def forward(self, tokens: torch.Tensor, start_pos: int):
+        # Shape: (B,Seq_Len)
+        batch_size, seq_len = tokens.shape
+        assert seq_len == 1, "Only 1 token at a time can be processed"
+
+        # Shape: (B, Seq_Len, Dim)
+        h = self.tok_embeddings(tokens)
+
+        # Retrieve pairs of (m,theta) uptill the positions [start_pos,start_pos+seq_len]
+        freq_complex = self.freqs_complex[start_pos:start_pos+seq_len]
+
+        # Consecutively apply to all decoder layers
+        for layer in self.layers:
+            h = layer(h,start_pos,freq_complex)
+        
+        h = self.norm(h)
+        output = self.output(h)
+        return output
